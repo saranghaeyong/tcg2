@@ -190,7 +190,11 @@ export function resetEntireCollection(userId?: string | null): void {
 // 1. Fetch Master Cards Catalog from Supabase
 export async function fetchCardsFromSupabase(): Promise<PersonCard[]> {
   const supabase = getSupabase();
-  if (!supabase) return [];
+
+  if (!supabase) {
+    console.warn('Supabase client is not connected');
+    return [];
+  }
 
   try {
     const { data, error } = await supabase
@@ -199,18 +203,26 @@ export async function fetchCardsFromSupabase(): Promise<PersonCard[]> {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.warn('Error fetching cards from Supabase:', error.message);
+      console.error('ERROR FETCHING CARDS FROM SUPABASE:', error);
       return [];
     }
 
+    console.log('SUPABASE CARDS FETCHED:', data?.length ?? 0);
+
     if (data && data.length > 0) {
       const mapped = (data as DbCard[]).map(mapDbCardToPersonCard);
+
       setCachedCloudCards(mapped);
+
+      console.log('CARD CATALOG UPDATED:', mapped.length);
+
       return mapped;
     }
+
+    console.warn('Supabase cards query returned 0 cards');
     return [];
   } catch (e) {
-    console.error('Exception fetching cards from Supabase:', e);
+    console.error('EXCEPTION FETCHING CARDS FROM SUPABASE:', e);
     return [];
   }
 }
