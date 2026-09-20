@@ -509,6 +509,7 @@ export async function openPackAtomic(
       const { data, error } = await supabase.rpc('open_pack', {
         p_player_id: player.id,
         p_pack_type: packType,
+        p_token: getSavedSession().token,
       });
 
       if (!error && data && data.success) {
@@ -780,6 +781,7 @@ export async function fetchAdminPlayers(
     try {
       const { data, error } = await supabase.rpc('admin_get_players', {
         p_admin_id: adminId,
+        p_token: getSavedSession().token,
       });
 
       if (!error && data && data.success) {
@@ -826,6 +828,7 @@ export async function adminTogglePlayerStatus(
         p_admin_id: adminId,
         p_target_player_id: targetPlayerId,
         p_is_active: isActive,
+        p_token: getSavedSession().token,
       });
 
       if (!error && data && data.success) {
@@ -865,6 +868,7 @@ export async function adminResetPassword(
         p_admin_id: adminId,
         p_target_player_id: targetPlayerId,
         p_new_password: newPass,
+        p_token: getSavedSession().token,
       });
 
       if (!error && data && data.success) {
@@ -911,6 +915,7 @@ export async function adminResetApplication(
       const { data, error } = await supabase.rpc('admin_reset_application', {
         p_admin_id: adminId,
         p_confirmation_code: confirmationCode,
+        p_token: getSavedSession().token,
       });
 
       if (error) {

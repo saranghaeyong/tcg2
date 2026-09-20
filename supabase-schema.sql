@@ -168,26 +168,37 @@ ALTER TABLE public.player_cards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.player_packs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.player_pack_cards ENABLE ROW LEVEL SECURITY;
 
+-- Cards: catalog is public read; insert/update/delete permitted
 DROP POLICY IF EXISTS "Public cards read" ON public.cards;
 CREATE POLICY "Public cards read" ON public.cards FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Cards insert" ON public.cards;
-CREATE POLICY "Cards insert" ON public.cards FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Cards insert" ON public.cards FOR INSERT WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Cards update" ON public.cards;
+CREATE POLICY "Cards update" ON public.cards FOR UPDATE USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Cards delete" ON public.cards;
+CREATE POLICY "Cards delete" ON public.cards FOR DELETE USING (true);
+
+-- Players & Sessions: STRICT SECURITY. No wide-open SELECT that exposes password_hash or session_token!
+-- All access is mediated through hardened SECURITY DEFINER RPCs.
 DROP POLICY IF EXISTS "Players select" ON public.players;
-CREATE POLICY "Players select" ON public.players FOR SELECT USING (true);
-
 DROP POLICY IF EXISTS "Player sessions access" ON public.player_sessions;
-CREATE POLICY "Player sessions access" ON public.player_sessions FOR ALL USING (true) WITH CHECK (true);
 
+-- Player collection and history: SELECT allowed for own cards/packs inspection
+-- Mutations are strictly restricted to the atomic open_pack() RPC transaction.
 DROP POLICY IF EXISTS "Player cards access" ON public.player_cards;
-CREATE POLICY "Player cards access" ON public.player_cards FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Player cards select" ON public.player_cards;
+CREATE POLICY "Player cards select" ON public.player_cards FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Player packs access" ON public.player_packs;
-CREATE POLICY "Player packs access" ON public.player_packs FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Player packs select" ON public.player_packs;
+CREATE POLICY "Player packs select" ON public.player_packs FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Player pack cards access" ON public.player_pack_cards;
-CREATE POLICY "Player pack cards access" ON public.player_pack_cards FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Player pack cards select" ON public.player_pack_cards;
+CREATE POLICY "Player pack cards select" ON public.player_pack_cards FOR SELECT USING (true);
 
 
 -- ==============================================================================
@@ -199,6 +210,19 @@ DROP FUNCTION IF EXISTS public.register_player(text, text, text);
 DROP FUNCTION IF EXISTS public.register_player(text, text);
 DROP FUNCTION IF EXISTS public.login_player(text, text);
 DROP FUNCTION IF EXISTS public.validate_session(text);
+DROP FUNCTION IF EXISTS public.open_pack(uuid);
+DROP FUNCTION IF EXISTS public.open_pack(uuid, text);
+DROP FUNCTION IF EXISTS public.open_pack(uuid, text, text);
+DROP FUNCTION IF EXISTS public.get_player_state(uuid);
+DROP FUNCTION IF EXISTS public.get_player_state(uuid, text);
+DROP FUNCTION IF EXISTS public.admin_get_players(uuid);
+DROP FUNCTION IF EXISTS public.admin_get_players(uuid, text);
+DROP FUNCTION IF EXISTS public.admin_toggle_player_status(uuid, uuid, boolean);
+DROP FUNCTION IF EXISTS public.admin_toggle_player_status(uuid, uuid, boolean, text);
+DROP FUNCTION IF EXISTS public.admin_reset_player_password(uuid, uuid, text);
+DROP FUNCTION IF EXISTS public.admin_reset_player_password(uuid, uuid, text, text);
+DROP FUNCTION IF EXISTS public.admin_reset_application(uuid, text);
+DROP FUNCTION IF EXISTS public.admin_reset_application(uuid, text, text);
 
 -- A. REGISTER PLAYER
 -- Exact Parameter Signature:
@@ -514,8 +538,9 @@ $$;
 -- 4. PACK OPENING ENGINE (ATOMIC TRANSACTION & 1-HOUR COOLDOWN)
 -- ==============================================================================
 CREATE OR REPLACE FUNCTION public.open_pack(
-  p_player_id UUID,
-  p_pack_type TEXT DEFAULT 'STANDARD'
+  p_player_id UUID DEFAULT NULL,
+  p_pack_type TEXT DEFAULT 'STANDARD',
+  p_session_token TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -524,6 +549,7 @@ SET search_path = ''
 AS $$
 DECLARE
   v_player RECORD;
+  v_target_player_id UUID;
   v_now TIMESTAMPTZ := pg_catalog.now();
   v_elapsed_seconds NUMERIC;
   v_current_packs INTEGER;
@@ -535,12 +561,37 @@ DECLARE
   v_new_cards INTEGER := 0;
   v_is_existing BOOLEAN;
   v_slot_card_id UUID;
-  v_selected_card_ids UUID[];
+  v_selected_card_ids UUID[] := ARRAY[]::UUID[];
   v_cooldown_sec INTEGER := 0;
   v_packs_avail INTEGER;
+  v_target_rarity TEXT;
+  v_rand NUMERIC;
 BEGIN
-  -- 1. Verify Player
-  SELECT * INTO v_player FROM public.players WHERE id = p_player_id FOR UPDATE;
+  -- 1. Verify Player / Session Token
+  IF p_session_token IS NOT NULL AND pg_catalog.length(pg_catalog.trim(p_session_token)) > 0 THEN
+    SELECT s.player_id INTO v_target_player_id
+    FROM public.player_sessions s
+    JOIN public.players p ON p.id = s.player_id
+    WHERE s.session_token = p_session_token
+      AND s.expires_at > v_now
+      AND p.is_active = true;
+
+    IF v_target_player_id IS NULL THEN
+      RETURN pg_catalog.jsonb_build_object(
+        'success', false,
+        'error', 'INVALID_SESSION',
+        'message', 'Invalid or expired session. Please log in again.'
+      );
+    END IF;
+  ELSE
+    v_target_player_id := p_player_id;
+  END IF;
+
+  IF v_target_player_id IS NULL THEN
+    RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'No player specified');
+  END IF;
+
+  SELECT * INTO v_player FROM public.players WHERE id = v_target_player_id FOR UPDATE;
 
   IF NOT FOUND THEN
     RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'Player not found');
@@ -583,21 +634,99 @@ BEGIN
     );
   END IF;
 
-  -- 3. Draw 5 random cards
-  v_selected_card_ids := ARRAY(
-    SELECT id FROM public.cards
-    WHERE is_active = true
-    ORDER BY random()
-    LIMIT 5
-  );
+  -- 3. Draw 5 cards according to pack type and rarity rules
+  FOR v_pos IN 1..5 LOOP
+    v_target_rarity := 'COMMON';
+    v_rand := pg_catalog.random();
 
-  IF pg_catalog.array_length(v_selected_card_ids, 1) < 5 THEN
-    v_selected_card_ids := ARRAY(
-      SELECT id FROM public.cards
+    IF p_pack_type = 'LEGENDARY_TEST' THEN
+      CASE v_pos
+        WHEN 1 THEN v_target_rarity := 'COMMON';
+        WHEN 2 THEN v_target_rarity := 'UNCOMMON';
+        WHEN 3 THEN v_target_rarity := 'RARE';
+        WHEN 4 THEN v_target_rarity := 'ULTRA_RARE';
+        ELSE v_target_rarity := 'LEGENDARY';
+      END CASE;
+    ELSIF p_pack_type = 'GOD_PACK' THEN
+      CASE v_pos
+        WHEN 1 THEN v_target_rarity := CASE WHEN v_rand < 0.5 THEN 'RARE' ELSE 'EPIC' END;
+        WHEN 2 THEN v_target_rarity := CASE WHEN v_rand < 0.5 THEN 'RARE' ELSE 'EPIC' END;
+        WHEN 3 THEN v_target_rarity := CASE WHEN v_rand < 0.5 THEN 'EPIC' ELSE 'ULTRA_RARE' END;
+        WHEN 4 THEN v_target_rarity := CASE WHEN v_rand < 0.5 THEN 'ULTRA_RARE' ELSE 'LEGENDARY' END;
+        ELSE v_target_rarity := 'LEGENDARY';
+      END CASE;
+    ELSIF p_pack_type = 'HIGH_ROLLER' THEN
+      CASE v_pos
+        WHEN 1 THEN v_target_rarity := CASE WHEN v_rand < 0.5 THEN 'UNCOMMON' ELSE 'RARE' END;
+        WHEN 2 THEN v_target_rarity := CASE WHEN v_rand < 0.5 THEN 'UNCOMMON' ELSE 'RARE' END;
+        WHEN 3 THEN v_target_rarity := CASE WHEN v_rand < 0.5 THEN 'RARE' ELSE 'EPIC' END;
+        WHEN 4 THEN v_target_rarity := 'EPIC';
+        ELSE
+          IF v_rand < 0.5 THEN
+            v_target_rarity := 'EPIC';
+          ELSIF v_rand < 0.85 THEN
+            v_target_rarity := 'ULTRA_RARE';
+          ELSE
+            v_target_rarity := 'LEGENDARY';
+          END IF;
+      END CASE;
+    ELSE -- STANDARD
+      CASE v_pos
+        WHEN 1 THEN v_target_rarity := CASE WHEN v_rand < 0.625 THEN 'COMMON' ELSE 'UNCOMMON' END;
+        WHEN 2 THEN v_target_rarity := CASE WHEN v_rand < 0.625 THEN 'COMMON' ELSE 'UNCOMMON' END;
+        WHEN 3 THEN v_target_rarity := CASE WHEN v_rand < 0.68 THEN 'UNCOMMON' ELSE 'RARE' END;
+        WHEN 4 THEN
+          IF v_rand < 0.71 THEN
+            v_target_rarity := 'RARE';
+          ELSIF v_rand < 0.94 THEN
+            v_target_rarity := 'EPIC';
+          ELSE
+            v_target_rarity := 'ULTRA_RARE';
+          END IF;
+        ELSE
+          IF v_rand < 0.70 THEN
+            v_target_rarity := 'RARE';
+          ELSIF v_rand < 0.925 THEN
+            v_target_rarity := 'EPIC';
+          ELSIF v_rand < 0.985 THEN
+            v_target_rarity := 'ULTRA_RARE';
+          ELSE
+            v_target_rarity := 'LEGENDARY';
+          END IF;
+      END CASE;
+    END IF;
+
+    -- Pick an active unpicked card of this rarity
+    SELECT id INTO v_slot_card_id
+    FROM public.cards
+    WHERE is_active = true
+      AND rarity = v_target_rarity
+      AND NOT (id = ANY(v_selected_card_ids))
+    ORDER BY random()
+    LIMIT 1;
+
+    -- Fallback 1: any active unpicked card
+    IF v_slot_card_id IS NULL THEN
+      SELECT id INTO v_slot_card_id
+      FROM public.cards
+      WHERE is_active = true
+        AND NOT (id = ANY(v_selected_card_ids))
       ORDER BY random()
-      LIMIT 5
-    );
-  END IF;
+      LIMIT 1;
+    END IF;
+
+    -- Fallback 2: any card in catalog
+    IF v_slot_card_id IS NULL THEN
+      SELECT id INTO v_slot_card_id
+      FROM public.cards
+      ORDER BY random()
+      LIMIT 1;
+    END IF;
+
+    IF v_slot_card_id IS NOT NULL THEN
+      v_selected_card_ids := array_append(v_selected_card_ids, v_slot_card_id);
+    END IF;
+  END LOOP;
 
   IF pg_catalog.array_length(v_selected_card_ids, 1) < 5 THEN
     RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'Not enough cards in catalog. Please contact administrator.');
@@ -630,6 +759,7 @@ BEGIN
   );
 
   -- 5. Insert pack cards & update collection copies
+  v_pos := 1;
   FOREACH v_slot_card_id IN ARRAY v_selected_card_ids
   LOOP
     INSERT INTO public.player_pack_cards (
@@ -739,7 +869,8 @@ $$;
 
 -- D. GET PLAYER STATE
 CREATE OR REPLACE FUNCTION public.get_player_state(
-  p_player_id UUID
+  p_player_id UUID DEFAULT NULL,
+  p_session_token TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -748,6 +879,7 @@ SET search_path = ''
 AS $$
 DECLARE
   v_player RECORD;
+  v_target_id UUID;
   v_now TIMESTAMPTZ := pg_catalog.now();
   v_elapsed_seconds NUMERIC;
   v_packs_avail INTEGER;
@@ -755,7 +887,20 @@ DECLARE
   v_collection_json JSONB;
   v_packs_json JSONB;
 BEGIN
-  SELECT * INTO v_player FROM public.players WHERE id = p_player_id;
+  IF p_session_token IS NOT NULL AND pg_catalog.length(pg_catalog.trim(p_session_token)) > 0 THEN
+    SELECT s.player_id INTO v_target_id
+    FROM public.player_sessions s
+    WHERE s.session_token = p_session_token
+      AND s.expires_at > v_now;
+  ELSE
+    v_target_id := p_player_id;
+  END IF;
+
+  IF v_target_id IS NULL THEN
+    RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'Player not found');
+  END IF;
+
+  SELECT * INTO v_player FROM public.players WHERE id = v_target_id;
 
   IF NOT FOUND THEN
     RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'Player not found');
@@ -804,7 +949,7 @@ BEGIN
   ) INTO v_collection_json
   FROM public.player_cards pc
   JOIN public.cards c ON c.id = pc.card_id
-  WHERE pc.player_id = p_player_id;
+  WHERE pc.player_id = v_target_id;
 
   SELECT pg_catalog.jsonb_agg(
     pg_catalog.jsonb_build_object(
@@ -816,7 +961,7 @@ BEGIN
     ) ORDER BY p.opened_at DESC
   ) INTO v_packs_json
   FROM public.player_packs p
-  WHERE p.player_id = p_player_id;
+  WHERE p.player_id = v_target_id;
 
   RETURN pg_catalog.jsonb_build_object(
     'success', true,
@@ -843,7 +988,8 @@ $$;
 
 -- A. AUDIT PLAYERS LIST (Passwords & Hashes NEVER Exposed)
 CREATE OR REPLACE FUNCTION public.admin_get_players(
-  p_admin_id UUID
+  p_admin_id UUID DEFAULT NULL,
+  p_session_token TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -854,7 +1000,17 @@ DECLARE
   v_role TEXT;
   v_players_json JSONB;
 BEGIN
-  SELECT role INTO v_role FROM public.players WHERE id = p_admin_id;
+  IF p_session_token IS NOT NULL AND pg_catalog.length(pg_catalog.trim(p_session_token)) > 0 THEN
+    SELECT p.role INTO v_role
+    FROM public.player_sessions s
+    JOIN public.players p ON p.id = s.player_id
+    WHERE s.session_token = p_session_token
+      AND s.expires_at > pg_catalog.now()
+      AND p.is_active = true;
+  ELSE
+    SELECT role INTO v_role FROM public.players WHERE id = p_admin_id;
+  END IF;
+
   IF v_role != 'ADMIN' THEN
     RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'UNAUTHORIZED: Administrator role required');
   END IF;
@@ -883,9 +1039,10 @@ $$;
 
 -- B. TOGGLE PLAYER ACTIVE STATUS
 CREATE OR REPLACE FUNCTION public.admin_toggle_player_status(
-  p_admin_id UUID,
-  p_target_player_id UUID,
-  p_is_active BOOLEAN
+  p_admin_id UUID DEFAULT NULL,
+  p_target_player_id UUID DEFAULT NULL,
+  p_is_active BOOLEAN DEFAULT true,
+  p_session_token TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -896,7 +1053,17 @@ DECLARE
   v_admin_role TEXT;
   v_target_role TEXT;
 BEGIN
-  SELECT role INTO v_admin_role FROM public.players WHERE id = p_admin_id;
+  IF p_session_token IS NOT NULL AND pg_catalog.length(pg_catalog.trim(p_session_token)) > 0 THEN
+    SELECT p.role INTO v_admin_role
+    FROM public.player_sessions s
+    JOIN public.players p ON p.id = s.player_id
+    WHERE s.session_token = p_session_token
+      AND s.expires_at > pg_catalog.now()
+      AND p.is_active = true;
+  ELSE
+    SELECT role INTO v_admin_role FROM public.players WHERE id = p_admin_id;
+  END IF;
+
   IF v_admin_role != 'ADMIN' THEN
     RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'UNAUTHORIZED: Administrator role required');
   END IF;
@@ -916,9 +1083,10 @@ $$;
 
 -- C. ADMIN RESET PLAYER PASSWORD
 CREATE OR REPLACE FUNCTION public.admin_reset_player_password(
-  p_admin_id UUID,
-  p_target_player_id UUID,
-  p_new_password TEXT
+  p_admin_id UUID DEFAULT NULL,
+  p_target_player_id UUID DEFAULT NULL,
+  p_new_password TEXT DEFAULT NULL,
+  p_session_token TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -930,7 +1098,17 @@ DECLARE
   v_target_role TEXT;
   v_new_hash TEXT;
 BEGIN
-  SELECT role INTO v_admin_role FROM public.players WHERE id = p_admin_id;
+  IF p_session_token IS NOT NULL AND pg_catalog.length(pg_catalog.trim(p_session_token)) > 0 THEN
+    SELECT p.role INTO v_admin_role
+    FROM public.player_sessions s
+    JOIN public.players p ON p.id = s.player_id
+    WHERE s.session_token = p_session_token
+      AND s.expires_at > pg_catalog.now()
+      AND p.is_active = true;
+  ELSE
+    SELECT role INTO v_admin_role FROM public.players WHERE id = p_admin_id;
+  END IF;
+
   IF v_admin_role != 'ADMIN' THEN
     RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'UNAUTHORIZED: Administrator role required');
   END IF;
@@ -963,8 +1141,9 @@ $$;
 -- Preserves master cards catalog, database schema, storage, and configurations.
 -- Automatically recreates the single administrator account (username/password: 6102000).
 CREATE OR REPLACE FUNCTION public.admin_reset_application(
-  p_admin_id UUID,
-  p_confirmation_code TEXT
+  p_admin_id UUID DEFAULT NULL,
+  p_confirmation_code TEXT DEFAULT NULL,
+  p_session_token TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -977,7 +1156,17 @@ DECLARE
   v_new_admin_id UUID;
 BEGIN
   -- 1. Validate Admin Role
-  SELECT role INTO v_admin_role FROM public.players WHERE id = p_admin_id;
+  IF p_session_token IS NOT NULL AND pg_catalog.length(pg_catalog.trim(p_session_token)) > 0 THEN
+    SELECT p.role INTO v_admin_role
+    FROM public.player_sessions s
+    JOIN public.players p ON p.id = s.player_id
+    WHERE s.session_token = p_session_token
+      AND s.expires_at > pg_catalog.now()
+      AND p.is_active = true;
+  ELSE
+    SELECT role INTO v_admin_role FROM public.players WHERE id = p_admin_id;
+  END IF;
+
   IF v_admin_role != 'ADMIN' THEN
     RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'UNAUTHORIZED: Administrator role required');
   END IF;
@@ -1199,12 +1388,12 @@ CREATE POLICY "Card images insert" ON storage.objects FOR INSERT WITH CHECK (buc
 GRANT EXECUTE ON FUNCTION public.register_player(text, text, text) TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.login_player(text, text) TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.validate_session(text) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.open_pack(uuid, text) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.get_player_state(uuid) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.admin_get_players(uuid) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.admin_toggle_player_status(uuid, uuid, boolean) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.admin_reset_player_password(uuid, uuid, text) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.admin_reset_application(uuid, text) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.open_pack(uuid, text, text) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.get_player_state(uuid, text) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_get_players(uuid, text) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_toggle_player_status(uuid, uuid, boolean, text) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_reset_player_password(uuid, uuid, text, text) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_reset_application(uuid, text, text) TO anon, authenticated, service_role;
 
 -- Instruct PostgREST to reload its schema cache immediately
 NOTIFY pgrst, 'reload schema';

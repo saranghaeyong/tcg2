@@ -282,7 +282,25 @@ export default function App() {
 
     // Trigger celebratory background particle burst
     setBurstTrigger((prev) => prev + 1);
-  }, [currentPackCards, profile, player]);
+
+    // If Supabase is connected, sync authoritative state
+    if (player && isConfigured) {
+      try {
+        const [cloudCollection, cloudPacks] = await Promise.all([
+          fetchUserCollectionFromSupabase(player.id),
+          fetchUserPacksFromSupabase(player.id),
+        ]);
+        if (Object.keys(cloudCollection).length > 0) {
+          setCollection(cloudCollection);
+        }
+        if (cloudPacks.length > 0) {
+          setPackHistory(cloudPacks);
+        }
+      } catch (e) {
+        console.warn('Syncing collection after pack opening error:', e);
+      }
+    }
+  }, [currentPackCards, profile, player, isConfigured]);
 
   // Reset entire collection
   const handleResetCollection = useCallback(() => {

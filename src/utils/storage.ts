@@ -223,15 +223,38 @@ export async function fetchUserCollectionFromSupabase(
   if (!supabase || !userId) return {};
 
   try {
+    // Try get_player_state RPC first
+    const { data: rpcData, error: rpcError } = await supabase.rpc('get_player_state', {
+      p_player_id: userId,
+    });
+
+    if (!rpcError && rpcData?.success && rpcData?.collection) {
+      const collectionMap: Record<string, CollectedCard> = {};
+      Object.entries(rpcData.collection).forEach(([cardId, item]: [string, any]) => {
+        if (item.card) {
+          collectionMap[cardId] = {
+            cardId,
+            card: item.card,
+            copies: item.copies || 1,
+            firstDiscoveredAt: item.firstDiscoveredAt,
+            lastDiscoveredAt: item.lastDiscoveredAt,
+          };
+        }
+      });
+      saveCollectionToStorage(collectionMap, userId);
+      return collectionMap;
+    }
+
+    // Direct table query using canonical schema: copies, first_collected_at, last_collected_at
     const { data, error } = await supabase
       .from('player_cards')
       .select(`
         id,
         player_id,
         card_id,
-        count,
-        first_obtained_at,
-        last_obtained_at,
+        copies,
+        first_collected_at,
+        last_collected_at,
         cards (*)
       `)
       .eq('player_id', userId);
@@ -256,9 +279,9 @@ export async function fetchUserCollectionFromSupabase(
         collectionMap[card.id] = {
           cardId: card.id,
           card,
-          copies: row.count,
-          firstDiscoveredAt: row.first_obtained_at,
-          lastDiscoveredAt: row.last_obtained_at,
+          copies: row.copies || 1,
+          firstDiscoveredAt: row.first_collected_at,
+          lastDiscoveredAt: row.last_collected_at,
         };
       }
     });
@@ -279,7 +302,7 @@ export async function fetchUserPacksFromSupabase(userId: string): Promise<PackHi
   try {
     const { data: packsData, error: packsError } = await supabase
       .from('player_packs')
-      .select('*')
+      .select('id, player_id, pack_number, pack_name, new_cards_count, opened_at')
       .eq('player_id', userId)
       .order('opened_at', { ascending: false })
       .limit(50);
@@ -292,13 +315,13 @@ export async function fetchUserPacksFromSupabase(userId: string): Promise<PackHi
     const { data: slotData, error: slotError } = await supabase
       .from('player_pack_cards')
       .select(`
-        player_pack_id,
-        slot_number,
+        pack_id,
+        position,
         card_id,
         cards (*)
       `)
-      .in('player_pack_id', packIds)
-      .order('slot_number', { ascending: true });
+      .in('pack_id', packIds)
+      .order('position', { ascending: true });
 
     if (slotError) return [];
 
@@ -314,18 +337,18 @@ export async function fetchUserPacksFromSupabase(userId: string): Promise<PackHi
       }
 
       if (card) {
-        if (!slotsByPack[slot.player_pack_id]) slotsByPack[slot.player_pack_id] = [];
-        slotsByPack[slot.player_pack_id].push(card);
+        if (!slotsByPack[slot.pack_id]) slotsByPack[slot.pack_id] = [];
+        slotsByPack[slot.pack_id].push(card);
       }
     });
 
-    const historyItems: PackHistoryItem[] = packsData.map((p, index) => ({
+    const historyItems: PackHistoryItem[] = packsData.map((p) => ({
       id: p.id,
-      packNumber: packsData.length - index,
+      packNumber: p.pack_number,
       packName: p.pack_name || 'Person Booster Pack',
       openedAt: p.opened_at,
       cards: slotsByPack[p.id] || [],
-      newCardsCount: p.cards_count || 5,
+      newCardsCount: p.new_cards_count ?? 0,
     }));
 
     // Cache locally
@@ -339,7 +362,7 @@ export async function fetchUserPacksFromSupabase(userId: string): Promise<PackHi
   }
 }
 
-// 4. Save opened pack & cards into Supabase
+// 4. Save opened pack & cards into Supabase (Direct table fallback when RPC not used)
 export async function recordPackOpenedToSupabase(params: {
   userId: string;
   packType: string;
@@ -348,20 +371,29 @@ export async function recordPackOpenedToSupabase(params: {
   newCardsCount: number;
 }): Promise<void> {
   const supabase = getSupabase();
-  const { userId, packType, packName, cards } = params;
+  const { userId, packName, cards, newCardsCount } = params;
   if (!supabase || !userId) return;
 
   try {
-    // 1. Insert into `player_packs` table
+    // 1. Get next pack number
+    const { count } = await supabase
+      .from('player_packs')
+      .select('*', { count: 'exact', head: true })
+      .eq('player_id', userId);
+
+    const packNumber = (count || 0) + 1;
+    const now = new Date().toISOString();
+
+    // 2. Insert into `player_packs` table with canonical schema
     const { data: packRow, error: packError } = await supabase
       .from('player_packs')
       .insert([
         {
           player_id: userId,
-          pack_type: packType,
+          pack_number: packNumber,
           pack_name: packName,
-          cards_count: cards.length,
-          opened_at: new Date().toISOString(),
+          new_cards_count: newCardsCount,
+          opened_at: now,
         },
       ])
       .select()
@@ -373,12 +405,13 @@ export async function recordPackOpenedToSupabase(params: {
 
     const packId = packRow?.id;
 
-    // 2. Insert slot records into `player_pack_cards`
+    // 3. Insert slot records into `player_pack_cards` (canonical: pack_id, position, card_id)
     if (packId) {
       const slotInserts = cards.map((card, idx) => ({
-        player_pack_id: packId,
+        pack_id: packId,
         card_id: card.id.includes('-') && card.id.length === 36 ? card.id : null,
-        slot_number: idx + 1,
+        position: idx + 1,
+        created_at: now,
       })).filter((s) => s.card_id !== null);
 
       if (slotInserts.length > 0) {
@@ -386,25 +419,24 @@ export async function recordPackOpenedToSupabase(params: {
       }
     }
 
-    // 3. Upsert player collected cards in `player_cards` table
+    // 4. Upsert player collected cards in `player_cards` table (canonical: copies, first_collected_at, last_collected_at)
     for (const card of cards) {
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(card.id);
       if (!isUuid) continue;
 
       const { data: existing } = await supabase
         .from('player_cards')
-        .select('id, count')
+        .select('id, copies')
         .eq('player_id', userId)
         .eq('card_id', card.id)
         .maybeSingle();
 
-      const now = new Date().toISOString();
       if (existing) {
         await supabase
           .from('player_cards')
           .update({
-            count: (existing.count || 1) + 1,
-            last_obtained_at: now,
+            copies: (existing.copies || 1) + 1,
+            last_collected_at: now,
           })
           .eq('id', existing.id);
       } else {
@@ -412,18 +444,18 @@ export async function recordPackOpenedToSupabase(params: {
           {
             player_id: userId,
             card_id: card.id,
-            count: 1,
-            first_obtained_at: now,
-            last_obtained_at: now,
+            copies: 1,
+            first_collected_at: now,
+            last_collected_at: now,
           },
         ]);
       }
     }
 
-    // 4. Update Player stats
+    // 5. Update Player stats in `players` table (canonical: total_packs_opened)
     const { data: playerStats } = await supabase
       .from('players')
-      .select('packs_opened, total_cards_collected')
+      .select('total_packs_opened')
       .eq('id', userId)
       .maybeSingle();
 
@@ -431,9 +463,7 @@ export async function recordPackOpenedToSupabase(params: {
       await supabase
         .from('players')
         .update({
-          packs_opened: (playerStats.packs_opened || 0) + 1,
-          total_cards_collected: (playerStats.total_cards_collected || 0) + cards.length,
-          updated_at: new Date().toISOString(),
+          total_packs_opened: (playerStats.total_packs_opened || 0) + 1,
         })
         .eq('id', userId);
     }
@@ -567,7 +597,7 @@ export async function saveUserCardsToSupabase(
 
       const { data: existing } = await supabase
         .from('player_cards')
-        .select('id, count')
+        .select('id, copies')
         .eq('player_id', userId)
         .eq('card_id', card.id)
         .maybeSingle();
@@ -577,8 +607,8 @@ export async function saveUserCardsToSupabase(
         await supabase
           .from('player_cards')
           .update({
-            count: (existing.count || 1) + 1,
-            last_obtained_at: now,
+            copies: (existing.copies || 1) + 1,
+            last_collected_at: now,
           })
           .eq('id', existing.id);
       } else {
@@ -586,9 +616,9 @@ export async function saveUserCardsToSupabase(
           {
             player_id: userId,
             card_id: card.id,
-            count: 1,
-            first_obtained_at: now,
-            last_obtained_at: now,
+            copies: 1,
+            first_collected_at: now,
+            last_collected_at: now,
           },
         ]);
       }
