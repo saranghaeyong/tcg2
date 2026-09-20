@@ -111,12 +111,16 @@ export const AdminAddCardModal: React.FC<AdminAddCardModalProps> = ({
         setSaving(false);
         onClose();
         return;
-      } else if (error) {
-        console.warn('Database save warning:', error);
       }
+
+      // Do not silently fall back to local storage when Supabase is configured.
+      // The admin catalog is cloud-backed, so an insert error must be shown to the admin.
+      setSaving(false);
+      setErrorMsg(error || 'Card could not be saved to the Supabase master catalog.');
+      return;
     }
 
-    // Fallback: local storage save
+    // Local-only fallback when Supabase is genuinely not configured.
     saveCustomCard(previewCard);
     onCardAdded(previewCard);
     setSaving(false);
