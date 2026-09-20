@@ -343,14 +343,23 @@ export default function App() {
 
   // New card added from Admin Modal
   const handleCustomCardAdded = useCallback(
-    (newCard: PersonCard) => {
-      addCardsToCollection([newCard], player?.id);
-      setCollection(getStoredCollection(player?.id));
-      refreshMasterCards();
-      setBurstTrigger((prev) => prev + 1);
-    },
-    [player, refreshMasterCards]
-  );
+  async (newCard: PersonCard) => {
+    addCardsToCollection([newCard], player?.id);
+    setCollection(getStoredCollection(player?.id));
+
+    // Immediately add the newly created card to the Admin catalog UI
+    setMasterCards((prev) => {
+      const withoutDuplicate = prev.filter((card) => card.id !== newCard.id);
+      return [newCard, ...withoutDuplicate];
+    });
+
+    // Then sync the complete catalog from Supabase
+    await refreshMasterCards();
+
+    setBurstTrigger((prev) => prev + 1);
+  },
+  [player, refreshMasterCards]
+);
 
   return (
     <div className="relative min-h-screen w-full bg-[#07080d] text-neutral-100 flex flex-col font-sans overflow-x-hidden selection:bg-sky-500 selection:text-black">
