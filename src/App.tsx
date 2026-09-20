@@ -156,7 +156,7 @@ export default function App() {
     }
   }, [activeTab, isAdmin]);
 
-  // Handle role-based redirection on player login
+  // Handle role-based redirection on player login & clean state reset on sign out
   const loggedInPlayerIdRef = React.useRef<string | null>(null);
   useEffect(() => {
     if (player && player.id !== loggedInPlayerIdRef.current) {
@@ -168,6 +168,12 @@ export default function App() {
       }
     } else if (!player) {
       loggedInPlayerIdRef.current = null;
+      // When signed out: clear temporary game, pack opening, card reveal, and active modal UI states
+      setGameMode('IDLE');
+      setCurrentPackCards([]);
+      setSelectedModalCard(null);
+      setIsCooldownModalOpen(false);
+      setActiveTab('HOME');
     }
   }, [player]);
 

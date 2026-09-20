@@ -5,6 +5,7 @@ import {
   loginPlayer,
   getSavedSession,
   clearSession,
+  invalidateCurrentSessionToServer,
   calculateCooldownState,
   validateCurrentSession,
 } from '../utils/playerEngine';
@@ -216,6 +217,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signOut = async (): Promise<void> => {
+    try {
+      await invalidateCurrentSessionToServer();
+    } catch (e) {
+      console.warn('Error invalidating server session during sign out:', e);
+    }
     clearSession();
     setPlayer(null);
     setWelcomeModalState('NONE');

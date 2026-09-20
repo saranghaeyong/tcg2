@@ -304,26 +304,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenSet
           )}
         </div>
 
-        {/* Database Status indicator & setup trigger */}
-        <div className="mt-4 pt-3 flex items-center justify-between text-[11px] font-mono text-neutral-400 border-t border-white/5">
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                isConfigured ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
-              }`}
-            />
-            <span>{isConfigured ? 'Supabase Connected' : 'Local Offline Engine'}</span>
-          </div>
-          {onOpenSetup && (
-            <button
-              type="button"
-              onClick={onOpenSetup}
-              className="text-neutral-400 hover:text-white underline cursor-pointer"
-            >
-              Configure DB
-            </button>
-          )}
-        </div>
       </div>
     </div>
   );

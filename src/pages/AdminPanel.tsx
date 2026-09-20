@@ -14,6 +14,7 @@ import {
   fetchAdminPlayers,
   adminTogglePlayerStatus,
   adminResetPassword,
+  adminResetApplication,
 } from '../utils/playerEngine';
 import {
   ShieldAlert,
@@ -36,6 +37,8 @@ import {
   Check,
   UserCheck,
   UserX,
+  AlertTriangle,
+  RotateCcw,
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -44,14 +47,14 @@ interface AdminPanelProps {
   onOpenCreateModal: () => void;
 }
 
-type AdminSection = 'CARDS' | 'PLAYERS';
+type AdminSection = 'CARDS' | 'PLAYERS' | 'SYSTEM';
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   cards,
   onRefreshCards,
   onOpenCreateModal,
 }) => {
-  const { player, isAdmin } = useAuth();
+  const { player, isAdmin, signOut } = useAuth();
   const [activeSection, setActiveSection] = useState<AdminSection>('CARDS');
 
   // Cards state
@@ -83,6 +86,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [resettingPlayer, setResettingPlayer] = useState<any | null>(null);
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [resettingLoading, setResettingLoading] = useState(false);
+
+  // System Complete Reset state
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [resetConfirmationInput, setResetConfirmationInput] = useState('');
+  const [isResettingApp, setIsResettingApp] = useState(false);
 
   // Load players when switching to PLAYERS tab
   const loadPlayers = async () => {
@@ -295,6 +303,42 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  const handleExecuteAppReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!player) return;
+    if (resetConfirmationInput !== 'RESET-CONFIRM-6102000') {
+      setStatusMsg({
+        type: 'error',
+        text: 'Confirmation code does not match. Please type exactly: RESET-CONFIRM-6102000',
+      });
+      return;
+    }
+
+    setIsResettingApp(true);
+    soundManager.playButtonClick();
+
+    const { success, error } = await adminResetApplication(player.id, resetConfirmationInput);
+    setIsResettingApp(false);
+
+    if (success) {
+      setIsResetModalOpen(false);
+      setResetConfirmationInput('');
+      setStatusMsg({
+        type: 'success',
+        text: 'Complete Application Reset successful! All player accounts and collections purged. Admin restored.',
+      });
+      // Trigger sign out after complete application wipe
+      setTimeout(() => {
+        signOut();
+      }, 1200);
+    } else {
+      setStatusMsg({
+        type: 'error',
+        text: `Reset failed: ${error || 'Unknown error occurred'}`,
+      });
+    }
+  };
+
   return (
     <div
       id="admin-panel-screen"
@@ -345,6 +389,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           >
             <Users className="w-3.5 h-3.5" />
             <span>PLAYER ACCOUNTS</span>
+          </button>
+
+          <button
+            onClick={() => {
+              soundManager.playButtonClick();
+              setActiveSection('SYSTEM');
+            }}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer ${
+              activeSection === 'SYSTEM'
+                ? 'bg-rose-500 text-white shadow-md'
+                : 'text-neutral-400 hover:text-rose-400'
+            }`}
+          >
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span>SYSTEM RESET</span>
           </button>
         </div>
       </div>
@@ -681,6 +740,83 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
+      {/* ========================================================================= */}
+      {/* 3. SYSTEM COMPLETE APPLICATION RESET SECTION                              */}
+      {/* ========================================================================= */}
+      {activeSection === 'SYSTEM' && (
+        <div id="admin-system-reset-section" className="space-y-6">
+          <div className="rounded-3xl bg-neutral-950/80 border border-rose-500/30 p-6 sm:p-8 shadow-2xl backdrop-blur-md">
+            <div className="flex items-start gap-4 mb-6">
+              <div className="w-12 h-12 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center shrink-0 text-rose-400">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h2 className="text-lg sm:text-xl font-serif font-black text-white uppercase tracking-wider">
+                  Complete Application Reset
+                </h2>
+                <p className="text-xs sm:text-sm font-sans text-neutral-400 mt-1">
+                  Permanently clears all player accounts, active sessions, cards collected in player vaults, and pack opening histories.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 text-xs font-mono space-y-2">
+                <div className="flex items-center gap-2 text-rose-400 font-bold uppercase">
+                  <Trash2 className="w-4 h-4" />
+                  <span>Will Be Permanently Cleared</span>
+                </div>
+                <ul className="list-disc list-inside text-neutral-300 space-y-1 text-[11px]">
+                  <li>All player accounts and profiles</li>
+                  <li>All server-side player sessions</li>
+                  <li>All collections and vaults</li>
+                  <li>All pack-opening logs and records</li>
+                  <li>All temporary frontend and game cache states</li>
+                </ul>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 text-xs font-mono space-y-2">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold uppercase">
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Guaranteed Preserved</span>
+                </div>
+                <ul className="list-disc list-inside text-neutral-300 space-y-1 text-[11px]">
+                  <li>Master Cards Catalog definition table</li>
+                  <li>Database schemas and SQL tables</li>
+                  <li>Storage buckets & uploaded card images</li>
+                  <li>Supabase connection configurations</li>
+                  <li>Administrator account (recreated: 6102000)</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-rose-950/20 border border-rose-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="text-xs font-mono font-bold text-rose-300 uppercase tracking-wide">
+                  Requires Confirmation Code
+                </div>
+                <div className="text-xs text-neutral-400 font-sans">
+                  Only the primary system administrator can initiate this irreversible operation.
+                </div>
+              </div>
+
+              <button
+                id="open-app-reset-dialog-btn"
+                onClick={() => {
+                  soundManager.playButtonClick();
+                  setResetConfirmationInput('');
+                  setIsResetModalOpen(true);
+                }}
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-mono font-bold text-xs uppercase tracking-wider transition-all shadow-lg hover:shadow-rose-500/20 cursor-pointer flex items-center justify-center gap-2 shrink-0"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Reset Application</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ADMIN RESET PASSWORD MODAL */}
       {resettingPlayer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
@@ -925,6 +1061,95 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 CONFIRM REMOVAL
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* COMPLETE APPLICATION RESET CONFIRMATION MODAL */}
+      {isResetModalOpen && (
+        <div
+          id="admin-reset-confirm-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
+        >
+          <div className="relative w-full max-w-md rounded-3xl bg-neutral-950 border border-rose-500/40 p-6 sm:p-8 shadow-2xl">
+            <button
+              onClick={() => setIsResetModalOpen(false)}
+              className="absolute top-5 right-5 text-neutral-400 hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-2xl bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base sm:text-lg font-serif font-black text-white uppercase tracking-wider">
+                  CONFIRM APPLICATION RESET
+                </h3>
+                <p className="text-xs font-mono text-rose-400">
+                  PROTECTED ADMINISTRATOR ACTION
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-rose-950/30 border border-rose-500/20 text-xs text-rose-200 mb-5 space-y-2 font-sans">
+              <p className="font-bold">
+                WARNING: This will permanently delete all player data:
+              </p>
+              <ul className="list-disc list-inside space-y-0.5 text-neutral-300 text-[11px] font-mono">
+                <li>All player accounts and vaults</li>
+                <li>All active sessions and history logs</li>
+                <li>Master card catalog will remain safe</li>
+                <li>Admin (6102000) will be automatically restored</li>
+              </ul>
+            </div>
+
+            <form onSubmit={handleExecuteAppReset} className="space-y-4">
+              <div>
+                <label className="block text-xs font-mono text-neutral-300 mb-1.5 font-bold">
+                  Type <span className="text-rose-400 font-bold select-all">RESET-CONFIRM-6102000</span> to proceed:
+                </label>
+                <input
+                  id="reset-confirmation-code-input"
+                  type="text"
+                  required
+                  value={resetConfirmationInput}
+                  onChange={(e) => setResetConfirmationInput(e.target.value)}
+                  placeholder="RESET-CONFIRM-6102000"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-900 border border-rose-500/40 text-white text-xs font-mono focus:outline-none focus:border-rose-400"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsResetModalOpen(false)}
+                  disabled={isResettingApp}
+                  className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-mono text-neutral-300 cursor-pointer disabled:opacity-50"
+                >
+                  CANCEL
+                </button>
+                <button
+                  id="confirm-app-reset-execute-btn"
+                  type="submit"
+                  disabled={isResettingApp || resetConfirmationInput !== 'RESET-CONFIRM-6102000'}
+                  className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-mono font-bold uppercase tracking-wider cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-lg hover:shadow-rose-600/30"
+                >
+                  {isResettingApp ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>PURGING DATABASE...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>PERMANENTLY RESET</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

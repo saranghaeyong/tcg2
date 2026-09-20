@@ -190,9 +190,9 @@ export async function registerPlayer(
   if (supabase && isSupabaseConfigured()) {
     try {
       const { data, error } = await supabase.rpc('register_player', {
+        p_username: trimmedUser,
         p_display_name: displayName?.trim() || trimmedUser,
         p_password: password,
-        p_username: trimmedUser,
       });
 
       if (error) {
@@ -339,17 +339,18 @@ export async function loginPlayer(
   // Try Supabase PostgreSQL RPC first
   if (supabase && isSupabaseConfigured()) {
     try {
-      const { data, error } = await supabase.rpc('login_player', {
+      console.log("Login username:", trimmedUser);
+      const { data, error } = await supabase.rpc("login_player", {
         p_username: trimmedUser,
         p_password: password,
       });
 
       if (error) {
+        console.error("LOGIN RPC ERROR:", error);
         if (isSchemaCacheMissing(error)) {
           console.warn('[PCC Engine] Supabase login_player not in schema cache (PGRST202). Continuing with local engine.');
           // Gracefully fall through to local login!
         } else {
-          console.error('Supabase login_player error:', error);
           const msg = error.message || '';
           if (msg.includes('deactivated') || msg.includes('inactive')) {
             return {
@@ -367,31 +368,42 @@ export async function loginPlayer(
           }
           return {
             player: null,
-            error: 'Authentication service error. Check the browser console.',
+            error: msg || 'Authentication service error. Check the browser console.',
             cooldown: calculateCooldownState(null),
           };
         }
       } else {
+        console.log("LOGIN RPC DATA:", {
+          success: data?.success,
+          role: data?.player?.role || data?.role,
+          username: data?.player?.username || data?.username,
+        });
         const playerRecord = data?.player || data;
-        if (playerRecord && playerRecord.id) {
-          const packsAvail = playerRecord.packs_in_current_batch ?? 5;
-          const lastBatchAt = playerRecord.last_pack_batch_at || null;
+        const rawId = playerRecord?.id || data?.id || data?.player_id || ('player-' + (playerRecord?.username || trimmedUser));
+        if (playerRecord && (playerRecord.id || data?.success || data?.username || playerRecord.username)) {
+          const packsAvail = playerRecord.packs_in_current_batch ?? data?.packs_in_current_batch ?? 5;
+          const lastBatchAt = playerRecord.last_pack_batch_at || data?.last_pack_batch_at || null;
+          const rawRole = String(playerRecord.role || data?.role || 'user').trim().toUpperCase();
+          const role: 'USER' | 'ADMIN' = rawRole === 'ADMIN' ? 'ADMIN' : 'USER';
 
           const player: Player = {
-            id: playerRecord.id,
-            username: playerRecord.username,
+            id: rawId,
+            username: playerRecord.username || data?.username || trimmedUser,
             usernameNormalized: norm,
             displayName:
               playerRecord.display_name ||
+              data?.display_name ||
               playerRecord.displayName ||
-              playerRecord.username,
-            role: (playerRecord.role as 'USER' | 'ADMIN') || 'USER',
-            createdAt: playerRecord.created_at || new Date().toISOString(),
-            lastLoginAt: playerRecord.last_login_at || new Date().toISOString(),
+              playerRecord.username ||
+              data?.username ||
+              trimmedUser,
+            role,
+            createdAt: playerRecord.created_at || data?.created_at || new Date().toISOString(),
+            lastLoginAt: playerRecord.last_login_at || data?.last_login_at || new Date().toISOString(),
             lastPackBatchAt: lastBatchAt,
             packsInCurrentBatch: packsAvail,
-            totalPacksOpened: playerRecord.total_packs_opened || 0,
-            isActive: playerRecord.is_active !== false,
+            totalPacksOpened: playerRecord.total_packs_opened ?? data?.total_packs_opened ?? 0,
+            isActive: playerRecord.is_active !== false && data?.is_active !== false,
           };
 
           const sessionToken = data?.session_token || ('pcc-token-' + player.id + '-' + Date.now());
@@ -652,10 +664,36 @@ export function saveSession(player: Player, token?: string) {
   } catch {}
 }
 
+export async function invalidateCurrentSessionToServer(token?: string | null): Promise<void> {
+  const currentToken = token || getSavedSession().token;
+  if (!currentToken) return;
+
+  const supabase = getSupabase();
+  if (supabase && isSupabaseConfigured()) {
+    try {
+      await supabase.from('player_sessions').delete().eq('session_token', currentToken);
+    } catch (e) {
+      console.warn('Could not delete server-side session from database:', e);
+    }
+  }
+}
+
 export function clearSession() {
   try {
     localStorage.removeItem(STORAGE_KEYS.CURRENT_PLAYER);
     localStorage.removeItem(STORAGE_KEYS.SESSION_TOKEN);
+    // Clear temporary and transient session cache keys
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('pcc_temp_') || k.startsWith('pcc_session_') || k.startsWith('pcc_transient_'))) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.clear();
+    }
   } catch {}
 }
 
@@ -678,12 +716,14 @@ export async function validateCurrentSession(): Promise<{
 
       if (!error && data && data.valid && data.player) {
         const pRecord = data.player;
+        const rawRole = String(pRecord.role || 'USER').toUpperCase();
+        const role: 'USER' | 'ADMIN' = rawRole === 'ADMIN' ? 'ADMIN' : 'USER';
         const validatedPlayer: Player = {
           id: pRecord.id,
           username: pRecord.username,
           usernameNormalized: pRecord.username.toLowerCase(),
           displayName: pRecord.display_name || pRecord.displayName || pRecord.username,
-          role: (pRecord.role as 'USER' | 'ADMIN') || 'USER',
+          role,
           createdAt: pRecord.created_at,
           lastLoginAt: pRecord.last_login_at || new Date().toISOString(),
           lastPackBatchAt: pRecord.last_pack_batch_at || null,
@@ -851,3 +891,98 @@ export async function adminResetPassword(
     return { success: false, error: e.message || 'Failed to reset password' };
   }
 }
+
+// Complete Application Reset (Admin Only)
+// Permanently clears player accounts, sessions, collections, and history.
+// Preserves the cards table, schema, and config.
+// Recreates the administrator account (6102000).
+export async function adminResetApplication(
+  adminId: string,
+  confirmationCode: string
+): Promise<{ success: boolean; error: string | null; adminAccount?: any }> {
+  if (confirmationCode !== 'RESET-CONFIRM-6102000') {
+    return { success: false, error: 'Invalid confirmation code. Please enter RESET-CONFIRM-6102000.' };
+  }
+
+  const supabase = getSupabase();
+
+  if (supabase && isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase.rpc('admin_reset_application', {
+        p_admin_id: adminId,
+        p_confirmation_code: confirmationCode,
+      });
+
+      if (error) {
+        console.error('Supabase admin_reset_application error:', error);
+        return { success: false, error: error.message || 'Database reset failed' };
+      }
+
+      if (data && data.success) {
+        // Clear local storage and caches after database reset
+        clearLocalUserDataAfterAppReset();
+        return { success: true, error: null, adminAccount: data.adminAccount };
+      } else {
+        return { success: false, error: data?.error || 'Database reset failed' };
+      }
+    } catch (e: any) {
+      console.warn('Exception during supabase admin_reset_application:', e);
+      return { success: false, error: e.message || 'Database reset failed' };
+    }
+  }
+
+  // Local fallback mode when Supabase is not configured
+  try {
+    const adminHash = await hashPasswordLocal('6102000');
+    const freshAdminAccount = {
+      id: 'admin-6102000-root',
+      username: '6102000',
+      usernameNormalized: '6102000',
+      displayName: 'System Administrator',
+      role: 'ADMIN',
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastPackBatchAt: null,
+      packsInCurrentBatch: 5,
+      totalPacksOpened: 0,
+      isActive: true,
+      passwordHash: adminHash,
+    };
+
+    const freshPlayers: Record<string, any> = {
+      '6102000': freshAdminAccount,
+    };
+
+    localStorage.setItem(STORAGE_KEYS.LOCAL_PLAYERS, JSON.stringify(freshPlayers));
+    clearLocalUserDataAfterAppReset();
+
+    return {
+      success: true,
+      error: null,
+      adminAccount: {
+        username: '6102000',
+        displayName: 'System Administrator',
+        role: 'ADMIN',
+      },
+    };
+  } catch (e: any) {
+    return { success: false, error: e.message || 'Local reset failed' };
+  }
+}
+
+function clearLocalUserDataAfterAppReset() {
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k !== STORAGE_KEYS.LOCAL_PLAYERS && !k.startsWith('pcc_supabase_')) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.clear();
+    }
+  } catch {}
+}
+

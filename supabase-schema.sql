@@ -958,6 +958,83 @@ BEGIN
 END;
 $$;
 
+-- D. COMPLETE APPLICATION RESET (ADMINISTRATOR PROTECTED)
+-- Permanently purges player accounts, sessions, collections, and history.
+-- Preserves master cards catalog, database schema, storage, and configurations.
+-- Automatically recreates the single administrator account (username/password: 6102000).
+CREATE OR REPLACE FUNCTION public.admin_reset_application(
+  p_admin_id UUID,
+  p_confirmation_code TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_admin_role TEXT;
+  v_admin_hash TEXT;
+  v_new_admin_id UUID;
+BEGIN
+  -- 1. Validate Admin Role
+  SELECT role INTO v_admin_role FROM public.players WHERE id = p_admin_id;
+  IF v_admin_role != 'ADMIN' THEN
+    RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'UNAUTHORIZED: Administrator role required');
+  END IF;
+
+  -- 2. Validate Confirmation Code
+  IF p_confirmation_code != 'RESET-CONFIRM-6102000' THEN
+    RETURN pg_catalog.jsonb_build_object('success', false, 'error', 'INVALID_CONFIRMATION: Code must be RESET-CONFIRM-6102000');
+  END IF;
+
+  -- 3. Compute secure bcrypt hash for the default administrator account (6102000)
+  BEGIN
+    v_admin_hash := public.crypt('6102000', public.gen_salt('bf'));
+  EXCEPTION WHEN OTHERS THEN
+    v_admin_hash := extensions.crypt('6102000', extensions.gen_salt('bf'));
+  END;
+
+  -- 4. Delete dependent player tables (preserving cards table completely untouched)
+  DELETE FROM public.player_pack_cards;
+  DELETE FROM public.player_packs;
+  DELETE FROM public.player_cards;
+  DELETE FROM public.player_sessions;
+  DELETE FROM public.players;
+
+  -- 5. Recreate the pristine Administrator Account (6102000)
+  INSERT INTO public.players (
+    username,
+    username_normalized,
+    password_hash,
+    display_name,
+    role,
+    packs_in_current_batch,
+    total_packs_opened,
+    is_active
+  ) VALUES (
+    '6102000',
+    '6102000',
+    v_admin_hash,
+    'System Administrator',
+    'ADMIN',
+    5,
+    0,
+    true
+  ) RETURNING id INTO v_new_admin_id;
+
+  RETURN pg_catalog.jsonb_build_object(
+    'success', true,
+    'message', 'Application successfully reset to clean state. Administrator account recreated.',
+    'adminAccount', pg_catalog.jsonb_build_object(
+      'id', v_new_admin_id,
+      'username', '6102000',
+      'displayName', 'System Administrator',
+      'role', 'ADMIN'
+    )
+  );
+END;
+$$;
+
 
 -- ==============================================================================
 -- 6. SEED SINGLE ADMINISTRATOR ACCOUNT
@@ -1127,6 +1204,7 @@ GRANT EXECUTE ON FUNCTION public.get_player_state(uuid) TO anon, authenticated, 
 GRANT EXECUTE ON FUNCTION public.admin_get_players(uuid) TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.admin_toggle_player_status(uuid, uuid, boolean) TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.admin_reset_player_password(uuid, uuid, text) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_reset_application(uuid, text) TO anon, authenticated, service_role;
 
 -- Instruct PostgREST to reload its schema cache immediately
 NOTIFY pgrst, 'reload schema';
