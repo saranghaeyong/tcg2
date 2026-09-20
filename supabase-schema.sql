@@ -606,7 +606,7 @@ BEGIN
   v_last_batch := v_player.last_pack_batch_at;
 
   IF v_last_batch IS NOT NULL THEN
-    v_elapsed_seconds := pg_catalog.extract(epoch FROM (v_now - v_last_batch));
+    v_elapsed_seconds := EXTRACT(EPOCH FROM (v_now - v_last_batch));
     IF v_elapsed_seconds >= 3600 THEN
       v_current_packs := 5;
       v_last_batch := NULL;
