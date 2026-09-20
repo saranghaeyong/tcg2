@@ -117,10 +117,21 @@ export default function App() {
     async function loadUserData() {
       refreshMasterCards();
 
+      // Never let the previous player/guest state remain visible while a new
+      // player's authoritative state is loading. This was causing a brand-new
+      // account to briefly inherit another account's 5 cards / pack state.
+      if (isMounted) {
+        setCollection({});
+        setPackHistory([]);
+        setProfile(getStoredProfile(player?.id));
+      }
+
       if (player && isConfigured) {
-        // Load cloud synchronized collection & packs
+        // Supabase is authoritative. Do not fall back to guest/previous-player
+        // localStorage while loading a cloud account.
+        const token = getSavedSession().token;
         const [cloudCollection, cloudPacks] = await Promise.all([
-          fetchUserCollectionFromSupabase(player.id, getSavedSession().token),
+          fetchUserCollectionFromSupabase(player.id, token),
           fetchUserPacksFromSupabase(player.id),
         ]);
 
@@ -128,12 +139,12 @@ export default function App() {
           setCollection(cloudCollection);
           setPackHistory(cloudPacks);
         }
-      } else {
-        // Fallback: local user scoped storage
+      } else if (player) {
+        // Local mode is still scoped strictly to the current player ID.
         if (isMounted) {
-          setCollection(getStoredCollection(player?.id));
-          setPackHistory(getStoredPackHistory(player?.id));
-          setProfile(getStoredProfile());
+          setCollection(getStoredCollection(player.id));
+          setPackHistory(getStoredPackHistory(player.id));
+          setProfile(getStoredProfile(player.id));
         }
       }
     }
