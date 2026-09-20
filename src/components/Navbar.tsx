@@ -14,7 +14,6 @@ import {
   PlusCircle,
   Sparkles,
   ShieldCheck,
-  Database,
   LogIn,
   LogOut,
   Clock,
@@ -180,28 +179,6 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </div>
 
-          {/* Supabase Status Button */}
-          <button
-            onClick={() => {
-              soundManager.playButtonClick();
-              onOpenSetup();
-            }}
-            title={isConfigured ? 'Supabase Connected' : 'Configure Supabase Database'}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] font-mono font-bold transition-all cursor-pointer ${
-              isConfigured
-                ? 'bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-400'
-                : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/30 text-amber-400'
-            }`}
-          >
-            <Database className="w-3.5 h-3.5" />
-            <span className="hidden lg:inline">{isConfigured ? 'DB CONNECTED' : 'SETUP DB'}</span>
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                isConfigured ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
-              }`}
-            />
-          </button>
-
           {/* ADMIN ONLY: Add Custom Person Card button */}
           {isAdmin && (
             <button
@@ -347,18 +324,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span>{cooldown.packsAvailable}/5 PKS</span>
             )}
           </div>
-
-          {/* Database Setup Button on mobile */}
-          <button
-            onClick={onOpenSetup}
-            className={`p-1.5 rounded-lg border text-[10px] font-mono ${
-              isConfigured
-                ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-300'
-                : 'bg-amber-500/20 border-amber-500/30 text-amber-300'
-            }`}
-          >
-            <Database className="w-3.5 h-3.5" />
-          </button>
 
           {/* ADMIN ONLY Add card button on mobile */}
           {isAdmin && (
