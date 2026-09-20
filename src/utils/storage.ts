@@ -235,8 +235,40 @@ export async function fetchUserCollectionFromSupabase(
   const supabase = getSupabase();
   if (!supabase || !userId) return {};
 
-  // IMPORTANT: Read the canonical player_cards table first. open_pack() writes
-  // here atomically, so the Collection screen must read the same source.
+  // IMPORTANT: Use the authoritative SECURITY DEFINER RPC first.
+  // open_pack() writes the collection atomically and get_player_state() reads
+  // the same transaction-owned data. This also avoids failures caused by older
+  // player_cards column layouts or restrictive RLS policies.
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('get_player_state', {
+      p_player_id: userId,
+      p_session_token: sessionToken || undefined,
+    });
+
+    if (!rpcError && rpcData?.success && rpcData?.collection) {
+      const collectionMap: Record<string, CollectedCard> = {};
+
+      Object.entries(rpcData.collection).forEach(([cardId, item]: [string, any]) => {
+        if (!item?.card) return;
+        collectionMap[cardId] = {
+          cardId,
+          card: item.card as PersonCard,
+          copies: Number(item.copies ?? 1),
+          firstDiscoveredAt: item.firstDiscoveredAt,
+          lastDiscoveredAt: item.lastDiscoveredAt,
+        };
+      });
+
+      saveCollectionToStorage(collectionMap, userId);
+      return collectionMap;
+    }
+
+    console.warn('Authoritative get_player_state collection read failed:', rpcError?.message || 'empty collection');
+  } catch (e) {
+    console.warn('Authoritative get_player_state collection exception:', e);
+  }
+
+  // Fallback for databases where the RPC is unavailable: read the canonical table directly.
   try {
     const { data, error } = await supabase
       .from('player_cards')
@@ -275,12 +307,12 @@ export async function fetchUserCollectionFromSupabase(
       return collectionMap;
     }
 
-    console.warn('Direct player_cards query failed; trying get_player_state:', error.message);
+    console.warn('Direct player_cards query failed:', error.message);
   } catch (e) {
-    console.warn('Direct player_cards query exception; trying get_player_state:', e);
+    console.warn('Direct player_cards query exception:', e);
   }
 
-  // Compatibility fallback for databases where direct table reads are restricted.
+  // Never overwrite an existing cloud collection with an empty result.
   try {
     const { data: rpcData, error: rpcError } = await supabase.rpc('get_player_state', {
       p_player_id: userId,
