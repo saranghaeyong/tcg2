@@ -251,18 +251,57 @@ export async function registerPlayer(
           };
 
           const sessionToken = data?.session_token || ('pcc-token-' + player.id + '-' + Date.now());
-          saveSession(player, sessionToken);
+
+          // A newly registered account must start from the database's
+          // authoritative state, never from stale browser/session state.
+          let authoritativePlayer = player;
+          let authoritativeCooldown: CooldownState = {
+            packsAvailable: 5,
+            maxPacks: 5,
+            cooldownRemainingSeconds: 0,
+            isCooldownActive: false,
+            cooldownUntil: null,
+          };
+
+          try {
+            const { data: stateData, error: stateError } = await supabase.rpc('get_player_state', {
+              p_player_id: player.id,
+              p_session_token: sessionToken,
+            });
+
+            if (!stateError && stateData?.success) {
+              const packsAvailable = Number(stateData.packsAvailable ?? 5);
+              const cooldownRemaining = Number(stateData.cooldownRemainingSeconds ?? 0);
+              const cooldownActive = packsAvailable <= 0 && cooldownRemaining > 0;
+
+              authoritativePlayer = {
+                ...player,
+                packsInCurrentBatch: packsAvailable,
+                totalPacksOpened: Number(
+                  stateData.player?.totalPacksOpened ?? player.totalPacksOpened
+                ),
+              };
+
+              authoritativeCooldown = {
+                packsAvailable,
+                maxPacks: MAX_PACKS_PER_BATCH,
+                cooldownRemainingSeconds: cooldownRemaining,
+                isCooldownActive: cooldownActive,
+                cooldownUntil: cooldownActive
+                  ? new Date(Date.now() + cooldownRemaining * 1000).toISOString()
+                  : null,
+              };
+            }
+          } catch (stateError) {
+            console.warn('Could not refresh new-player state after registration:', stateError);
+          }
+
+          saveSession(authoritativePlayer, sessionToken);
 
           return {
-            player,
+            player: authoritativePlayer,
             error: null,
-            cooldown: {
-              packsAvailable: 5,
-              maxPacks: 5,
-              cooldownRemainingSeconds: 0,
-              isCooldownActive: false,
-              cooldownUntil: null,
-            },
+            cooldown: authoritativeCooldown,
           };
         }
       }
