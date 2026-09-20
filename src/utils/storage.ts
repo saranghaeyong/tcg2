@@ -217,7 +217,8 @@ export async function fetchCardsFromSupabase(): Promise<PersonCard[]> {
 
 // 2. Fetch User Collected Cards from Supabase
 export async function fetchUserCollectionFromSupabase(
-  userId: string
+  userId: string,
+  sessionToken?: string | null
 ): Promise<Record<string, CollectedCard>> {
   const supabase = getSupabase();
   if (!supabase || !userId) return {};
@@ -226,6 +227,7 @@ export async function fetchUserCollectionFromSupabase(
     // Try get_player_state RPC first
     const { data: rpcData, error: rpcError } = await supabase.rpc('get_player_state', {
       p_player_id: userId,
+      p_session_token: sessionToken || undefined,
     });
 
     if (!rpcError && rpcData?.success && rpcData?.collection) {
