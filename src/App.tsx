@@ -66,6 +66,10 @@ export default function App() {
 
   // Persistence State
   const [collection, setCollection] = useState<Record<string, CollectedCard>>({});
+  // Tracks which authenticated player the currently displayed collection belongs to.
+  // This prevents the navbar from briefly showing the previous player's card count
+  // during the login -> cloud-state loading transition.
+  const [collectionOwnerId, setCollectionOwnerId] = useState<string | null>(null);
   const [packHistory, setPackHistory] = useState<PackHistoryItem[]>([]);
   const [profile, setProfile] = useState<UserProfile>(getStoredProfile());
   const [masterCards, setMasterCards] = useState<PersonCard[]>([]);
@@ -122,6 +126,7 @@ export default function App() {
       // account to briefly inherit another account's 5 cards / pack state.
       if (isMounted) {
         setCollection({});
+        setCollectionOwnerId(null);
         setPackHistory([]);
         setProfile(getStoredProfile(player?.id));
       }
@@ -137,12 +142,14 @@ export default function App() {
 
         if (isMounted) {
           setCollection(cloudCollection);
+          setCollectionOwnerId(player.id);
           setPackHistory(cloudPacks);
         }
       } else if (player) {
         // Local mode is still scoped strictly to the current player ID.
         if (isMounted) {
           setCollection(getStoredCollection(player.id));
+          setCollectionOwnerId(player.id);
           setPackHistory(getStoredPackHistory(player.id));
           setProfile(getStoredProfile(player.id));
         }
@@ -414,7 +421,7 @@ export default function App() {
         onOpenAddCard={() => setIsAddCardModalOpen(true)}
         onOpenAuth={() => openAuthModal('LOGIN')}
         onOpenSetup={() => setIsSetupModalOpen(true)}
-        totalCollectedCount={Object.keys(collection).length}
+        totalCollectedCount={player && collectionOwnerId === player.id ? Object.keys(collection).length : 0}
       />
 
       {/* Main Viewport Container */}
