@@ -414,7 +414,7 @@ BEGIN
   v_packs_available := pg_catalog.coalesce(v_player.packs_in_current_batch, 5);
 
   IF v_last_batch IS NOT NULL THEN
-    v_elapsed_seconds := pg_catalog.extract(epoch FROM (v_now - v_last_batch))::integer;
+    v_elapsed_seconds := EXTRACT(EPOCH FROM (v_now - v_last_batch))::integer;
     IF v_elapsed_seconds >= 3600 THEN
       -- 1-hour cooldown has elapsed, reset packs to 5
       v_packs_available := 5;
