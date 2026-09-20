@@ -276,9 +276,9 @@ export async function fetchUserCollectionFromSupabase(
         id,
         player_id,
         card_id,
-        copies,
-        first_collected_at,
-        last_collected_at,
+        count,
+        first_obtained_at,
+        last_obtained_at,
         cards (*)
       `)
       .eq('player_id', userId);
@@ -296,9 +296,9 @@ export async function fetchUserCollectionFromSupabase(
           collectionMap[card.id] = {
             cardId: card.id,
             card,
-            copies: Number(row.copies ?? 1),
-            firstDiscoveredAt: row.first_collected_at,
-            lastDiscoveredAt: row.last_collected_at,
+            copies: Number(row.count ?? 1),
+            firstDiscoveredAt: row.first_obtained_at,
+            lastDiscoveredAt: row.last_obtained_at,
           };
         }
       });
@@ -354,7 +354,7 @@ export async function fetchUserPacksFromSupabase(userId: string): Promise<PackHi
   try {
     const { data: packsData, error: packsError } = await supabase
       .from('player_packs')
-      .select('id, player_id, pack_number, pack_name, new_cards_count, opened_at')
+      .select('id, player_id, pack_type, pack_name, cards_count, opened_at')
       .eq('player_id', userId)
       .order('opened_at', { ascending: false })
       .limit(50);
@@ -367,13 +367,13 @@ export async function fetchUserPacksFromSupabase(userId: string): Promise<PackHi
     const { data: slotData, error: slotError } = await supabase
       .from('player_pack_cards')
       .select(`
-        pack_id,
-        position,
+        player_pack_id,
+        slot_number,
         card_id,
         cards (*)
       `)
-      .in('pack_id', packIds)
-      .order('position', { ascending: true });
+      .in('player_pack_id', packIds)
+      .order('slot_number', { ascending: true });
 
     if (slotError) return [];
 
@@ -389,18 +389,18 @@ export async function fetchUserPacksFromSupabase(userId: string): Promise<PackHi
       }
 
       if (card) {
-        if (!slotsByPack[slot.pack_id]) slotsByPack[slot.pack_id] = [];
-        slotsByPack[slot.pack_id].push(card);
+        if (!slotsByPack[slot.player_pack_id]) slotsByPack[slot.player_pack_id] = [];
+        slotsByPack[slot.player_pack_id].push(card);
       }
     });
 
     const historyItems: PackHistoryItem[] = packsData.map((p) => ({
       id: p.id,
-      packNumber: p.pack_number,
+      packNumber: packsData.length - packsData.indexOf(p),
       packName: p.pack_name || 'Person Booster Pack',
       openedAt: p.opened_at,
       cards: slotsByPack[p.id] || [],
-      newCardsCount: p.new_cards_count ?? 0,
+      newCardsCount: p.cards_count ?? 0,
     }));
 
     // Cache locally
