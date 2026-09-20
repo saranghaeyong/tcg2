@@ -39,7 +39,7 @@ import {
   fetchUserPacksFromSupabase,
   fetchCardsCatalogFromSupabase,
 } from './utils/storage';
-import { openPackAtomic } from './utils/playerEngine';
+import { openPackAtomic, getSavedSession } from './utils/playerEngine';
 import { PackType } from './utils/packGenerator';
 import { soundManager } from './utils/audio';
 
@@ -109,7 +109,7 @@ export default function App() {
       if (player && isConfigured) {
         // Load cloud synchronized collection & packs
         const [cloudCollection, cloudPacks] = await Promise.all([
-          fetchUserCollectionFromSupabase(player.id),
+          fetchUserCollectionFromSupabase(player.id, getSavedSession().token),
           fetchUserPacksFromSupabase(player.id),
         ]);
 
@@ -268,16 +268,24 @@ export default function App() {
   const handleAddToCollection = useCallback(async () => {
     if (currentPackCards.length === 0) return;
 
-    // Update client-side / local storage
-    const { updatedCollection } = addCardsToCollection(currentPackCards, player?.id);
-    setCollection({ ...updatedCollection });
+    // IMPORTANT: open_pack() already persisted the pack and collection atomically.
+    // Do not write the same cards again from the browser, otherwise copies can be doubled.
+    if (player && isConfigured) {
+      const { token } = getSavedSession();
+      const cloudCollection = await fetchUserCollectionFromSupabase(player.id, token);
+      setCollection(cloudCollection);
+    } else {
+      const { updatedCollection } = addCardsToCollection(currentPackCards, player?.id);
+      setCollection({ ...updatedCollection });
+    }
 
-    // Update Profile Stats
+    // Profile is derived from authoritative player/collection state.
+    const totalCopies = Object.values(collection).reduce((sum, item) => sum + item.copies, 0) + (player && isConfigured ? 0 : currentPackCards.length);
     const updatedProfile = updateStoredProfile({
-      packsOpened: profile.packsOpened + 1,
-      totalCardsCollected: profile.totalCardsCollected + currentPackCards.length,
-      level: Math.floor((profile.packsOpened + 1) / 3) + 1,
-    });
+      packsOpened: player?.totalPacksOpened ?? profile.packsOpened + 1,
+      totalCardsCollected: totalCopies,
+      level: Math.floor((player?.totalPacksOpened ?? profile.packsOpened + 1) / 3) + 1,
+    }, player?.id);
     setProfile(updatedProfile);
 
     // Trigger celebratory background particle burst
@@ -287,7 +295,7 @@ export default function App() {
     if (player && isConfigured) {
       try {
         const [cloudCollection, cloudPacks] = await Promise.all([
-          fetchUserCollectionFromSupabase(player.id),
+          fetchUserCollectionFromSupabase(player.id, getSavedSession().token),
           fetchUserPacksFromSupabase(player.id),
         ]);
         if (Object.keys(cloudCollection).length > 0) {
