@@ -909,7 +909,7 @@ BEGIN
   v_packs_avail := pg_catalog.coalesce(v_player.packs_in_current_batch, 5);
 
   IF v_player.last_pack_batch_at IS NOT NULL THEN
-    v_elapsed_seconds := pg_catalog.extract(epoch FROM (v_now - v_player.last_pack_batch_at));
+    v_elapsed_seconds := EXTRACT(EPOCH FROM (v_now - v_player.last_pack_batch_at));
     IF v_elapsed_seconds >= 3600 THEN
       v_packs_avail := 5;
       v_cooldown_sec := 0;
