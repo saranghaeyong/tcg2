@@ -223,31 +223,9 @@ export async function fetchUserCollectionFromSupabase(
   const supabase = getSupabase();
   if (!supabase || !userId) return {};
 
+  // IMPORTANT: Read the canonical player_cards table first. open_pack() writes
+  // here atomically, so the Collection screen must read the same source.
   try {
-    // Try get_player_state RPC first
-    const { data: rpcData, error: rpcError } = await supabase.rpc('get_player_state', {
-      p_player_id: userId,
-      p_session_token: sessionToken || undefined,
-    });
-
-    if (!rpcError && rpcData?.success && rpcData?.collection) {
-      const collectionMap: Record<string, CollectedCard> = {};
-      Object.entries(rpcData.collection).forEach(([cardId, item]: [string, any]) => {
-        if (item.card) {
-          collectionMap[cardId] = {
-            cardId,
-            card: item.card,
-            copies: item.copies || 1,
-            firstDiscoveredAt: item.firstDiscoveredAt,
-            lastDiscoveredAt: item.lastDiscoveredAt,
-          };
-        }
-      });
-      saveCollectionToStorage(collectionMap, userId);
-      return collectionMap;
-    }
-
-    // Direct table query using canonical schema: copies, first_collected_at, last_collected_at
     const { data, error } = await supabase
       .from('player_cards')
       .select(`
@@ -261,39 +239,67 @@ export async function fetchUserCollectionFromSupabase(
       `)
       .eq('player_id', userId);
 
-    if (error) {
-      console.warn('Error fetching player_cards from Supabase:', error.message);
-      return {};
+    if (!error) {
+      const collectionMap: Record<string, CollectedCard> = {};
+      const allAvailable = getAllAvailableCards();
+
+      data?.forEach((row: any) => {
+        const card = row.cards
+          ? mapDbCardToPersonCard(row.cards as DbCard)
+          : allAvailable.find((c) => c.id === row.card_id);
+
+        if (card) {
+          collectionMap[card.id] = {
+            cardId: card.id,
+            card,
+            copies: Number(row.copies ?? 1),
+            firstDiscoveredAt: row.first_collected_at,
+            lastDiscoveredAt: row.last_collected_at,
+          };
+        }
+      });
+
+      saveCollectionToStorage(collectionMap, userId);
+      return collectionMap;
     }
 
-    const collectionMap: Record<string, CollectedCard> = {};
-    const allAvailable = getAllAvailableCards();
+    console.warn('Direct player_cards query failed; trying get_player_state:', error.message);
+  } catch (e) {
+    console.warn('Direct player_cards query exception; trying get_player_state:', e);
+  }
 
-    data?.forEach((row: any) => {
-      let card: PersonCard | undefined;
-      if (row.cards) {
-        card = mapDbCardToPersonCard(row.cards as DbCard);
-      } else {
-        card = allAvailable.find((c) => c.id === row.card_id);
-      }
-
-      if (card) {
-        collectionMap[card.id] = {
-          cardId: card.id,
-          card,
-          copies: row.copies || 1,
-          firstDiscoveredAt: row.first_collected_at,
-          lastDiscoveredAt: row.last_collected_at,
-        };
-      }
+  // Compatibility fallback for databases where direct table reads are restricted.
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('get_player_state', {
+      p_player_id: userId,
+      p_session_token: sessionToken || undefined,
     });
 
-    saveCollectionToStorage(collectionMap, userId);
-    return collectionMap;
+    if (!rpcError && rpcData?.success && rpcData?.collection) {
+      const collectionMap: Record<string, CollectedCard> = {};
+
+      Object.entries(rpcData.collection).forEach(([cardId, item]: [string, any]) => {
+        if (!item?.card) return;
+        collectionMap[cardId] = {
+          cardId,
+          card: item.card as PersonCard,
+          copies: Number(item.copies ?? 1),
+          firstDiscoveredAt: item.firstDiscoveredAt,
+          lastDiscoveredAt: item.lastDiscoveredAt,
+        };
+      });
+
+      saveCollectionToStorage(collectionMap, userId);
+      return collectionMap;
+    }
+
+    console.warn('get_player_state collection read failed:', rpcError?.message || 'empty collection');
   } catch (e) {
     console.error('Exception fetching user collection from Supabase:', e);
-    return {};
   }
+
+  // Never overwrite an existing cloud collection with an empty result.
+  return getStoredCollection(userId);
 }
 
 // 3. Fetch User Pack History from Supabase
