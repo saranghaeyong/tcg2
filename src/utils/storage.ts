@@ -250,12 +250,21 @@ export async function fetchUserCollectionFromSupabase(
 
       Object.entries(rpcData.collection).forEach(([cardId, item]: [string, any]) => {
         if (!item?.card) return;
+        const rawCard = item.card as any;
+        // get_player_state is the source of truth. Normalize either the
+        // frontend-shaped card returned by the RPC or a DB-shaped card object.
+        const card: PersonCard = rawCard.photo_url || rawCard.card_number
+          ? mapDbCardToPersonCard(rawCard as DbCard)
+          : rawCard as PersonCard;
+
+        if (!card?.id || !card?.name) return;
+
         collectionMap[cardId] = {
           cardId,
-          card: item.card as PersonCard,
+          card,
           copies: Number(item.copies ?? 1),
-          firstDiscoveredAt: item.firstDiscoveredAt,
-          lastDiscoveredAt: item.lastDiscoveredAt,
+          firstDiscoveredAt: item.firstDiscoveredAt || item.first_obtained_at || new Date().toISOString(),
+          lastDiscoveredAt: item.lastDiscoveredAt || item.last_obtained_at || new Date().toISOString(),
         };
       });
 
@@ -324,12 +333,21 @@ export async function fetchUserCollectionFromSupabase(
 
       Object.entries(rpcData.collection).forEach(([cardId, item]: [string, any]) => {
         if (!item?.card) return;
+        const rawCard = item.card as any;
+        // get_player_state is the source of truth. Normalize either the
+        // frontend-shaped card returned by the RPC or a DB-shaped card object.
+        const card: PersonCard = rawCard.photo_url || rawCard.card_number
+          ? mapDbCardToPersonCard(rawCard as DbCard)
+          : rawCard as PersonCard;
+
+        if (!card?.id || !card?.name) return;
+
         collectionMap[cardId] = {
           cardId,
-          card: item.card as PersonCard,
+          card,
           copies: Number(item.copies ?? 1),
-          firstDiscoveredAt: item.firstDiscoveredAt,
-          lastDiscoveredAt: item.lastDiscoveredAt,
+          firstDiscoveredAt: item.firstDiscoveredAt || item.first_obtained_at || new Date().toISOString(),
+          lastDiscoveredAt: item.lastDiscoveredAt || item.last_obtained_at || new Date().toISOString(),
         };
       });
 
