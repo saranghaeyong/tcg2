@@ -553,7 +553,7 @@ export async function openPackAtomic(
       const { data, error } = await supabase.rpc('open_pack', {
         p_player_id: player.id,
         p_pack_type: packType,
-        p_token: getSavedSession().token,
+        p_session_token: getSavedSession().token,
       });
 
       if (!error && data && data.success) {
