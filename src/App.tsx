@@ -212,6 +212,22 @@ export default function App() {
       const cards = result.cards;
       setCurrentPackCards(cards);
 
+      // open_pack() has already committed the 5 cards to Supabase.
+      // Refresh the authoritative collection immediately so the Collection tab
+      // is correct even before the user clicks "Add to Collection".
+      if (isConfigured) {
+        try {
+          const { token } = getSavedSession();
+          const cloudCollection = await fetchUserCollectionFromSupabase(player.id, token);
+          setCollection(cloudCollection);
+
+          const cloudPacks = await fetchUserPacksFromSupabase(player.id);
+          if (cloudPacks.length > 0) setPackHistory(cloudPacks);
+        } catch (e) {
+          console.warn('Could not refresh cloud collection after pack opening:', e);
+        }
+      }
+
       // Record pack to history
       const historyItem: PackHistoryItem = {
         id: `pack-${Date.now()}`,
