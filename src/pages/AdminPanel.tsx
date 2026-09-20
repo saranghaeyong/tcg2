@@ -43,8 +43,9 @@ import {
 
 interface AdminPanelProps {
   cards: PersonCard[];
-  onRefreshCards: () => void;
+  onRefreshCards: () => Promise<void>;
   onOpenCreateModal: () => void;
+  isRefreshingCards: boolean;
 }
 
 type AdminSection = 'CARDS' | 'PLAYERS' | 'SYSTEM';
@@ -53,6 +54,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   cards,
   onRefreshCards,
   onOpenCreateModal,
+  isRefreshingCards,
 }) => {
   const { player, isAdmin, signOut } = useAuth();
   const [activeSection, setActiveSection] = useState<AdminSection>('CARDS');
@@ -495,11 +497,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 SHOWING <strong className="text-white">{filteredCards.length}</strong> MASTER CARDS
               </span>
               <button
-                onClick={onRefreshCards}
-                className="flex items-center gap-1 text-sky-400 hover:text-sky-300 cursor-pointer"
+                onClick={() => {
+                  void onRefreshCards();
+                }}
+                disabled={isRefreshingCards}
+                className="flex items-center gap-1 text-sky-400 hover:text-sky-300 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Refresh Pool</span>
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingCards ? 'animate-spin' : ''}`} />
+                <span>{isRefreshingCards ? 'Refreshing...' : 'Refresh Pool'}</span>
               </button>
             </div>
 
