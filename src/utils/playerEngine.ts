@@ -407,10 +407,54 @@ export async function loginPlayer(
           };
 
           const sessionToken = data?.session_token || ('pcc-token-' + player.id + '-' + Date.now());
-          saveSession(player, sessionToken);
 
-          const cooldownState = calculateCooldownState(player);
-          return { player, error: null, cooldown: cooldownState };
+          // Re-read the authoritative player state after login. This is important
+          // because the browser must never reset a returning player's pack count
+          // to the default 5 after logout/login.
+          let authoritativePlayer = player;
+          let authoritativeCooldown = calculateCooldownState(player);
+
+          try {
+            const { data: stateData, error: stateError } = await supabase.rpc('get_player_state', {
+              p_player_id: player.id,
+              p_session_token: sessionToken,
+            });
+
+            if (!stateError && stateData?.success) {
+              const packsAvailable = Number(
+                stateData.packsAvailable ?? player.packsInCurrentBatch ?? 5
+              );
+              const cooldownRemaining = Number(stateData.cooldownRemainingSeconds ?? 0);
+              const cooldownActive = packsAvailable <= 0 && cooldownRemaining > 0;
+
+              authoritativePlayer = {
+                ...player,
+                packsInCurrentBatch: packsAvailable,
+              };
+
+              authoritativeCooldown = {
+                packsAvailable,
+                maxPacks: MAX_PACKS_PER_BATCH,
+                cooldownRemainingSeconds: cooldownRemaining,
+                isCooldownActive: cooldownActive,
+                cooldownUntil: cooldownActive
+                  ? new Date(Date.now() + cooldownRemaining * 1000).toISOString()
+                  : null,
+              };
+            } else if (stateError) {
+              console.warn('Could not refresh authoritative pack state after login:', stateError.message);
+            }
+          } catch (stateError) {
+            console.warn('Exception refreshing authoritative pack state after login:', stateError);
+          }
+
+          saveSession(authoritativePlayer, sessionToken);
+
+          return {
+            player: authoritativePlayer,
+            error: null,
+            cooldown: authoritativeCooldown,
+          };
         }
 
         return {
