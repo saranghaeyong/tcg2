@@ -228,24 +228,29 @@ export default function App() {
         }
       }
 
-      // Record pack to history
-      const historyItem: PackHistoryItem = {
-        id: `pack-${Date.now()}`,
-        packNumber: (packHistory[0]?.packNumber || 0) + 1,
-        packName:
-          packType === 'LEGENDARY_TEST'
-            ? 'Celestial Sovereign Pack'
-            : packType === 'GOD_PACK'
-            ? 'All-Star God Pack'
-            : packType === 'HIGH_ROLLER'
-            ? 'Neon High-Roller Pack'
-            : 'Person Booster Pack',
-        openedAt: new Date().toISOString(),
-        cards,
-        newCardsCount: result.newCardsCount,
-      };
+      // Record pack to local history only when Supabase is not configured.
+      // In Supabase mode, open_pack() has already persisted the pack and the
+      // cloud history refresh above is authoritative. Adding a synthetic local
+      // item here would duplicate the just-opened pack.
+      if (!isConfigured) {
+        const historyItem: PackHistoryItem = {
+          id: `pack-${Date.now()}`,
+          packNumber: (packHistory[0]?.packNumber || 0) + 1,
+          packName:
+            packType === 'LEGENDARY_TEST'
+              ? 'Celestial Sovereign Pack'
+              : packType === 'GOD_PACK'
+              ? 'All-Star God Pack'
+              : packType === 'HIGH_ROLLER'
+              ? 'Neon High-Roller Pack'
+              : 'Person Booster Pack',
+          openedAt: new Date().toISOString(),
+          cards,
+          newCardsCount: result.newCardsCount,
+        };
 
-      setPackHistory((prev) => [historyItem, ...prev]);
+        setPackHistory((prev) => [historyItem, ...prev]);
+      }
 
       // Check for high rarities for particle celebration
       const hasLegendary = cards.some((c) => c.rarity === 'LEGENDARY');
@@ -265,6 +270,7 @@ export default function App() {
       player,
       cooldown,
       packHistory,
+      isConfigured,
       openAuthModal,
       updatePlayerState,
     ]
