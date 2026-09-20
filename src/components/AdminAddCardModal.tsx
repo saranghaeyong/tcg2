@@ -104,7 +104,7 @@ export const AdminAddCardModal: React.FC<AdminAddCardModalProps> = ({
 
     // 1. Try saving to Supabase `cards` table if configured
     if (isConfigured) {
-      const { card: createdDbCard, error } = await createCardInSupabase(previewCard, player?.id);
+      const { card: createdDbCard, error } = await createCardInSupabase(previewCard);
       if (createdDbCard) {
         saveCustomCard(createdDbCard);
         onCardAdded(createdDbCard);
