@@ -69,6 +69,8 @@ export default function App() {
   const [packHistory, setPackHistory] = useState<PackHistoryItem[]>([]);
   const [profile, setProfile] = useState<UserProfile>(getStoredProfile());
   const [masterCards, setMasterCards] = useState<PersonCard[]>([]);
+  const [isRefreshingCards, setIsRefreshingCards] = useState(false);
+  const refreshingCardsRef = React.useRef(false);
 
   // Settings
   const [settings, setSettings] = useState<AppSettings>({
@@ -89,14 +91,23 @@ export default function App() {
 
   // Refresh master catalog of cards from Supabase or fallback
   const refreshMasterCards = useCallback(async () => {
-    if (isConfigured) {
-      const dbCards = await fetchCardsCatalogFromSupabase();
-      if (dbCards.length > 0) {
-        setMasterCards(dbCards);
-        return;
+    if (refreshingCardsRef.current) return;
+
+    refreshingCardsRef.current = true;
+    setIsRefreshingCards(true);
+    try {
+      if (isConfigured) {
+        const dbCards = await fetchCardsCatalogFromSupabase();
+        if (dbCards.length > 0) {
+          setMasterCards(dbCards);
+          return;
+        }
       }
+      setMasterCards(getAllAvailableCards());
+    } finally {
+      refreshingCardsRef.current = false;
+      setIsRefreshingCards(false);
     }
-    setMasterCards(getAllAvailableCards());
   }, [isConfigured]);
 
   // Load user data on mount and whenever player changes
@@ -486,6 +497,7 @@ export default function App() {
               <AdminPanel
                 cards={masterCards}
                 onRefreshCards={refreshMasterCards}
+                isRefreshingCards={isRefreshingCards}
                 onOpenCreateModal={() => setIsAddCardModalOpen(true)}
               />
             )}
