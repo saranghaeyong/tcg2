@@ -788,11 +788,51 @@ export async function validateCurrentSession(): Promise<{
           isActive: true,
         };
 
-        saveSession(validatedPlayer, token);
+        // Re-read the authoritative player state after session validation.
+        // This prevents logout/login from ever reverting a partially-used pack
+        // batch to a browser-cached/default value.
+        let authoritativePlayer = validatedPlayer;
+        let authoritativeCooldown = calculateCooldownState(validatedPlayer);
+
+        try {
+          const { data: stateData, error: stateError } = await supabase.rpc('get_player_state', {
+            p_player_id: validatedPlayer.id,
+            p_session_token: token,
+          });
+
+          if (!stateError && stateData?.success) {
+            const packsAvailable = Number(
+              stateData.packsAvailable ?? validatedPlayer.packsInCurrentBatch ?? 5
+            );
+            const cooldownRemaining = Number(stateData.cooldownRemainingSeconds ?? 0);
+            const cooldownActive = packsAvailable <= 0 && cooldownRemaining > 0;
+
+            authoritativePlayer = {
+              ...validatedPlayer,
+              packsInCurrentBatch: packsAvailable,
+            };
+
+            authoritativeCooldown = {
+              packsAvailable,
+              maxPacks: MAX_PACKS_PER_BATCH,
+              cooldownRemainingSeconds: cooldownRemaining,
+              isCooldownActive: cooldownActive,
+              cooldownUntil: cooldownActive
+                ? new Date(Date.now() + cooldownRemaining * 1000).toISOString()
+                : null,
+            };
+          } else if (stateError) {
+            console.warn('Could not refresh authoritative state after session validation:', stateError.message);
+          }
+        } catch (stateError) {
+          console.warn('Exception refreshing authoritative state after session validation:', stateError);
+        }
+
+        saveSession(authoritativePlayer, token);
         return {
-          player: validatedPlayer,
+          player: authoritativePlayer,
           error: null,
-          cooldown: calculateCooldownState(validatedPlayer),
+          cooldown: authoritativeCooldown,
         };
       } else if (data && !data.valid) {
         // Explicitly expired or deactivated server-side
