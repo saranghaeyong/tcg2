@@ -525,6 +525,9 @@ export async function openPackAtomic(
           lastPackBatchAt: isCooldown ? new Date().toISOString() : player.lastPackBatchAt,
         };
 
+        // The server RPC is authoritative. Never fall back to local mode after a
+        // Supabase transaction has returned a real error; doing so can create a
+        // second, browser-only game state and make data appear to disappear.
         const cooldown: CooldownState = {
           packsAvailable: packsAvail,
           maxPacks: MAX_PACKS_PER_BATCH,
@@ -561,7 +564,15 @@ export async function openPackAtomic(
         };
       }
     } catch (e: any) {
-      console.warn('Supabase atomic pack error, running local atomic engine:', e);
+      console.error('Supabase atomic pack error:', e);
+      return {
+        success: false,
+        cards: [],
+        newCardsCount: 0,
+        updatedPlayer: player,
+        cooldown: calculateCooldownState(player),
+        error: 'Database error while opening the pack. Please try again.',
+      };
     }
   }
 
